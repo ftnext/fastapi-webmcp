@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TypeVar
 
 from .models import ToolMetadata
@@ -15,6 +15,7 @@ def webmcp_tool(
     description: str | None = None,
     read_only: bool | None = None,
     untrusted_content: bool = True,
+    headers: Mapping[str, str] | None = None,
 ) -> Callable[[F], F]:
     """Mark a FastAPI endpoint for exposure as an in-page WebMCP tool.
 
@@ -31,6 +32,7 @@ def webmcp_tool(
         description=description,
         read_only=read_only,
         untrusted_content=untrusted_content,
+        header_params=tuple((headers or {}).items()),
     )
 
     def decorator(function: F) -> F:

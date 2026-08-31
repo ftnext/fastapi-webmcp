@@ -54,8 +54,12 @@ def test_mount_serves_page_javascript_and_manifest() -> None:
 
     javascript = client.get("/agent/bridge.js")
     assert javascript.status_code == 200
-    assert "document.modelContext" in javascript.text
-    assert "context.registerTool" in javascript.text
+    assert 'import { registerWebMCP } from "./runtime.js"' in javascript.text
+
+    runtime = client.get("/agent/runtime.js")
+    assert runtime.status_code == 200
+    assert "document.modelContext" in runtime.text
+    assert "modelContext.registerTool" in runtime.text
 
     manifest_response = client.get("/agent/manifest.json")
     assert manifest_response.status_code == 200
@@ -63,6 +67,7 @@ def test_mount_serves_page_javascript_and_manifest() -> None:
     manifest = manifest_response.json()
     assert manifest["version"] == 1
     assert manifest["credentials"] == "omit"
+    assert {tool["kind"] for tool in manifest["tools"]} == {"request"}
     assert {tool["name"] for tool in manifest["tools"]} == {
         "inventory.create_item",
         "list_items",

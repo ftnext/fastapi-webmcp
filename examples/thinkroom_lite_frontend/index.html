@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Thinkroom Lite</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 52rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+      textarea { box-sizing: border-box; min-height: 18rem; padding: 1rem; width: 100%; }
+      button { margin: 0.75rem 0; padding: 0.5rem 1rem; }
+      #status { border: 1px solid currentColor; border-radius: 0.4rem; padding: 0.75rem; }
+    </style>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Thinkroom Lite</h1>
+      <p>
+        Open <a href="?slug=demo&mode=view">view mode</a> or
+        <a href="?slug=demo&mode=edit">edit mode</a>.
+      </p>
+      <p id="status" role="status">Loading document and WebMCP tools...</p>
+      <textarea id="editor" aria-label="Document content"></textarea>
+      <button id="save" type="button">Save</button>
+      <h2>Comments</h2>
+      <ul id="comments"></ul>
+    </main>
+  </body>
+</html>

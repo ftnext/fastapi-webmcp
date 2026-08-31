@@ -10,7 +10,7 @@ from fastapi.routing import APIRoute
 
 from .decorators import metadata_for
 from .exceptions import RouteConversionError
-from .models import BrowserTool, RequestMapping, ToolMetadata
+from .models import RequestMapping, RequestTool, ToolMetadata
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -32,10 +32,10 @@ class ToolDiscovery:
         self.exclude_operations = frozenset(exclude_operations)
         self.expose_all = expose_all
 
-    def discover(self) -> list[BrowserTool]:
+    def discover(self) -> list[RequestTool]:
         specification = self.app.openapi()
         route_index = self._route_index()
-        tools: list[BrowserTool] = []
+        tools: list[RequestTool] = []
         names: set[str] = set()
 
         for path, path_item in specification.get("paths", {}).items():
@@ -104,7 +104,7 @@ class ToolDiscovery:
         operation_id: str,
         operation: Mapping[str, Any],
         metadata: ToolMetadata | None,
-    ) -> BrowserTool:
+    ) -> RequestTool:
         name = metadata.name if metadata and metadata.name else operation_id
         if not TOOL_NAME_PATTERN.fullmatch(name):
             raise RouteConversionError(f"tool name {name!r} must match {TOOL_NAME_PATTERN.pattern}")
@@ -116,6 +116,7 @@ class ToolDiscovery:
             path_item=path_item,
             method=method,
             operation=operation,
+            metadata=metadata,
         )
         read_only = (
             metadata.read_only
@@ -123,7 +124,7 @@ class ToolDiscovery:
             else method in {"GET", "HEAD"}
         )
         untrusted_content = metadata.untrusted_content if metadata is not None else True
-        return BrowserTool(
+        return RequestTool(
             name=name,
             description=description,
             input_schema=input_schema,
@@ -156,6 +157,7 @@ class ToolDiscovery:
         path_item: Mapping[str, Any],
         method: str,
         operation: Mapping[str, Any],
+        metadata: ToolMetadata | None,
     ) -> tuple[dict[str, Any], RequestMapping]:
         properties: dict[str, Any] = {}
         required: list[str] = []
@@ -163,6 +165,9 @@ class ToolDiscovery:
         query_params: list[str] = []
         body_params: list[str] = []
         body_value_param: str | None = None
+        header_params: list[tuple[str, str]] = []
+        configured_headers = dict(metadata.header_params) if metadata is not None else {}
+        matched_headers: set[str] = set()
 
         parameters = [*path_item.get("parameters", []), *operation.get("parameters", [])]
         for raw_parameter in parameters:
@@ -171,6 +176,31 @@ class ToolDiscovery:
             location = parameter.get("in")
             if not isinstance(name, str) or not isinstance(location, str):
                 continue
+            if location == "header":
+                tool_name = next(
+                    (
+                        input_name
+                        for input_name, header_name in configured_headers.items()
+                        if header_name.casefold() == name.casefold()
+                    ),
+                    None,
+                )
+                if tool_name is not None:
+                    schema = self._resolve_schema(parameter.get("schema", {}), specification)
+                    if isinstance(parameter.get("description"), str):
+                        schema.setdefault("description", parameter["description"])
+                    self._add_property(
+                        properties,
+                        tool_name,
+                        schema,
+                        method=method,
+                        path=path,
+                    )
+                    if parameter.get("required") and tool_name not in required:
+                        required.append(tool_name)
+                    header_params.append((tool_name, name))
+                    matched_headers.add(tool_name)
+                    continue
             if location not in {"path", "query"}:
                 if parameter.get("required"):
                     raise RouteConversionError(
@@ -184,6 +214,13 @@ class ToolDiscovery:
             if parameter.get("required") and name not in required:
                 required.append(name)
             (path_params if location == "path" else query_params).append(name)
+
+        unmatched_headers = set(configured_headers) - matched_headers
+        if unmatched_headers:
+            names = ", ".join(sorted(unmatched_headers))
+            raise RouteConversionError(
+                f"{method} {path} declares WebMCP header inputs not found in OpenAPI: {names}"
+            )
 
         request_body = operation.get("requestBody")
         if request_body is not None:
@@ -235,6 +272,7 @@ class ToolDiscovery:
                 query_params=tuple(query_params),
                 body_params=tuple(body_params),
                 body_value_param=body_value_param,
+                header_params=tuple(header_params),
             ),
         )
 

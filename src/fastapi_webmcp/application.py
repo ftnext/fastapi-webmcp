@@ -1,19 +1,31 @@
 from __future__ import annotations
 
-from collections.abc import Collection
+import inspect
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from importlib.resources import files
-from typing import Any
+from typing import Any, TypeAlias
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .discovery import ToolDiscovery
-from .exceptions import FastAPIWebMCPError
-from .models import BrowserTool, ToolCredentials
+from .discovery import TOOL_NAME_PATTERN, ToolDiscovery
+from .exceptions import FastAPIWebMCPError, RouteConversionError
+from .models import (
+    BrowserTool,
+    ClientTool,
+    StaticTool,
+    ToolCredentials,
+    WebMCPManifest,
+)
+
+ManifestProviderResult: TypeAlias = WebMCPManifest | Collection[BrowserTool]
+ManifestProvider: TypeAlias = Callable[
+    [Request], ManifestProviderResult | Awaitable[ManifestProviderResult]
+]
 
 
 class FastAPIWebMCP:
-    """Expose selected FastAPI routes as tools registered by a browser page."""
+    """Expose selected FastAPI routes and page tools to browser agents."""
 
     def __init__(
         self,
@@ -36,6 +48,7 @@ class FastAPIWebMCP:
             exclude_operations=exclude_operations,
             expose_all=expose_all,
         )
+        self._additional_tools: list[BrowserTool] = []
         self._page_path: str | None = None
 
     @classmethod
@@ -58,18 +71,46 @@ class FastAPIWebMCP:
             credentials=credentials,
         )
 
-    def tools(self) -> list[BrowserTool]:
-        return self.discovery.discover()
+    def add_tool(self, tool: BrowserTool) -> BrowserTool:
+        """Add a static or client tool to every default manifest."""
 
-    def manifest(self, *, root_path: str = "") -> dict[str, Any]:
-        return {
+        candidate = [*self._additional_tools, tool]
+        self._validate_tools(candidate)
+        self._additional_tools.append(tool)
+        return tool
+
+    def tools(self) -> list[BrowserTool]:
+        tools: list[BrowserTool] = [*self.discovery.discover(), *self._additional_tools]
+        self._validate_tools(tools)
+        return tools
+
+    def manifest(
+        self,
+        *,
+        root_path: str = "",
+        tools: Collection[BrowserTool] | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        selected = list(self.tools() if tools is None else tools)
+        self._validate_tools(selected)
+        result: dict[str, Any] = {
             "version": 1,
             "basePath": self._normalize_root_path(root_path),
             "credentials": self.credentials,
-            "tools": [tool.as_dict() for tool in self.tools()],
+            "tools": [tool.as_dict() for tool in selected],
         }
+        if context:
+            result["context"] = dict(context)
+        return result
 
-    def mount(self, *, page: str = "/webmcp") -> None:
+    def mount(
+        self,
+        *,
+        page: str = "/webmcp",
+        manifest_provider: ManifestProvider | None = None,
+    ) -> None:
+        """Mount the packaged page, runtime, and a possibly dynamic manifest."""
+
         if self._page_path is not None:
             raise FastAPIWebMCPError(f"fastapi-webmcp is already mounted at {self._page_path}")
         if not hasattr(self.app, "frontend"):
@@ -79,8 +120,22 @@ class FastAPIWebMCP:
         manifest_path = f"{page_path}/manifest.json"
 
         async def serve_manifest(request: Request) -> JSONResponse:
+            page_manifest: WebMCPManifest | None = None
+            if manifest_provider is not None:
+                provided = manifest_provider(request)
+                if inspect.isawaitable(provided):
+                    provided = await provided
+                page_manifest = (
+                    provided
+                    if isinstance(provided, WebMCPManifest)
+                    else WebMCPManifest(tools=provided)
+                )
             return JSONResponse(
-                self.manifest(root_path=request.scope.get("root_path", "")),
+                self.manifest(
+                    root_path=request.scope.get("root_path", ""),
+                    tools=page_manifest.tools if page_manifest is not None else None,
+                    context=page_manifest.context if page_manifest is not None else None,
+                ),
                 headers={"Cache-Control": "no-store"},
             )
 
@@ -98,6 +153,40 @@ class FastAPIWebMCP:
             fallback="index.html",
         )
         self._page_path = page_path
+
+    def _validate_tools(self, tools: Collection[BrowserTool]) -> None:
+        names: set[str] = set()
+        for tool in tools:
+            if not TOOL_NAME_PATTERN.fullmatch(tool.name):
+                raise RouteConversionError(
+                    f"tool name {tool.name!r} must match {TOOL_NAME_PATTERN.pattern}"
+                )
+            if tool.name in names:
+                raise RouteConversionError(f"duplicate WebMCP tool name: {tool.name}")
+            names.add(tool.name)
+            schema = tool.input_schema
+            if schema.get("type") != "object":
+                raise RouteConversionError(f"tool {tool.name!r} input schema must be an object")
+            properties = schema.get("properties")
+            required = schema.get("required")
+            if not isinstance(properties, Mapping) or not isinstance(required, list):
+                raise RouteConversionError(
+                    f"tool {tool.name!r} input schema needs properties and required"
+                )
+            unknown_required = [
+                name for name in required if not isinstance(name, str) or name not in properties
+            ]
+            if unknown_required:
+                required_names = ", ".join(sorted(str(name) for name in unknown_required))
+                raise RouteConversionError(
+                    f"tool {tool.name!r} requires unknown input properties: {required_names}"
+                )
+            if isinstance(tool, ClientTool) and not TOOL_NAME_PATTERN.fullmatch(tool.action):
+                raise RouteConversionError(
+                    f"client action {tool.action!r} must match {TOOL_NAME_PATTERN.pattern}"
+                )
+            if isinstance(tool, StaticTool) and not isinstance(tool.text, str):
+                raise RouteConversionError(f"static tool {tool.name!r} text must be a string")
 
     def _normalize_page_path(self, page: str) -> str:
         normalized = "/" + page.strip("/")
