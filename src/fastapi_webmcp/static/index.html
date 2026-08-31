@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="fastapi-webmcp-manifest" content="./manifest.json">
+    <title>FastAPI WebMCP</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+
+      body {
+        max-width: 46rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+        line-height: 1.6;
+      }
+
+      code {
+        padding: 0.15rem 0.35rem;
+        border: 1px solid currentColor;
+        border-radius: 0.25rem;
+      }
+
+      #webmcp-status {
+        padding: 0.75rem 1rem;
+        border: 1px solid currentColor;
+        border-radius: 0.4rem;
+      }
+    </style>
+    <script type="module" src="./bridge.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>FastAPI WebMCP</h1>
+      <p>
+        This page exposes selected FastAPI routes as in-page browser tools. It
+        uses plain HTML and a packaged JavaScript bridge.
+      </p>
+
+      <p id="webmcp-status" role="status">Checking WebMCP support...</p>
+
+      <h2>Tools</h2>
+      <ul id="webmcp-tools">
+        <li>Loading manifest...</li>
+      </ul>
+    </main>
+  </body>
+</html>
