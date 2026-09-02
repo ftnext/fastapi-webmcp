@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-webmcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Expose selected FastAPI routes as in-page WebMCP browser tools."
 readme = "README.md"
 requires-python = ">=3.10"

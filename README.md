@@ -127,15 +127,23 @@ the JSON body.
 
 Use `manifest_provider` when the tool set depends on a document, user, or page
 capability. A page-scoped path value can be bound so the agent cannot retarget
-the tool to another document.
+the tool to another document. The provider is resolved by FastAPI's dependency
+system, so it can use `Depends`, `Security`, request validation, dependency
+overrides, and yield dependencies in the same way as a path operation.
 
 ```python
+from typing import Annotated
+
+from fastapi import Depends
 from fastapi_webmcp import RequestTool, WebMCPManifest
 
 
-async def page_manifest(request: Request) -> WebMCPManifest:
+async def page_manifest(
+    request: Request,
+    user: Annotated[User, Depends(current_user)],
+) -> WebMCPManifest:
     slug = request.query_params["slug"]
-    can_write = await viewer_can_write(request, slug)
+    can_write = await user_can_write(user, slug)
     tools = [tool.bind_path(slug=slug) for tool in webmcp.tools() if isinstance(tool, RequestTool)]
     if can_write:
         tools.append(replace_content_tool)
@@ -146,8 +154,92 @@ webmcp.mount(page="/_webmcp", manifest_provider=page_manifest)
 ```
 
 The provider is evaluated for every manifest request. Applications should
-still re-check write permission inside a client handler and at the persistence
-boundary.
+still re-check write permission at every persistence boundary. Hiding a tool
+from the manifest is a user-experience measure, not an authorization boundary.
+A provider that accidentally returns `None` fails closed instead of falling
+back to the default tool set.
+
+### Authentication and authorization
+
+Use the same FastAPI dependencies for the manifest and the underlying API
+operations. `Security` scopes and `app.dependency_overrides` are preserved:
+
+```python
+from typing import Annotated
+
+from fastapi import Security
+
+
+async def page_manifest(
+    user: Annotated[
+        User,
+        Security(current_user, scopes=["documents:read"]),
+    ],
+) -> WebMCPManifest:
+    tools = readable_tools(user)
+    if user.has_permission("documents:write"):
+        tools.append(replace_content_tool)
+    return WebMCPManifest(tools=tools, context={"canWrite": user.can_write})
+
+
+@app.patch("/documents/{slug}")
+async def update_document(
+    slug: str,
+    update: DocumentUpdate,
+    user: Annotated[
+        User,
+        Security(current_user, scopes=["documents:write"]),
+    ],
+): ...
+```
+
+For a static manifest, or for checks whose return value is not needed by the
+provider, pass parameterless dependencies just as you would to a FastAPI path
+operation:
+
+```python
+webmcp.mount(
+    page="/_webmcp",
+    dependencies=[Depends(current_user)],
+)
+```
+
+These dependencies protect `manifest.json`. The packaged HTML and JavaScript
+remain public because they contain no user data or credentials. Protect a
+separate application frontend with its own FastAPI router dependencies when
+needed.
+
+Required `Authorization` header dependencies and cookie dependencies are
+transport-managed and do not become agent inputs. Bearer headers must be
+supplied with `requestHeaders`; cookies require `credentials="same-origin"`.
+
+The runtime always loads the same-origin manifest with browser credentials.
+For cookie sessions, select `credentials="same-origin"` so request tools also
+send the session cookie; enable CSRF protection for state-changing operations:
+
+```python
+webmcp = FastAPIWebMCP(app, credentials="same-origin")
+```
+
+An existing frontend that uses bearer tokens can supply headers at request
+time without placing secrets in the manifest:
+
+```javascript
+registerWebMCP({
+  manifestUrl: "/_webmcp/manifest.json",
+  requestHeaders: () => ({ Authorization: `Bearer ${readAccessToken()}` }),
+})
+```
+
+`requestHeaders` is used only for same-origin manifest and tool requests. It
+can be a headers object or an async callback receiving `{ kind, url, tool,
+signal }`. The application-provided headers override agent-controlled header
+inputs when names collide. Authentication headers such as `Authorization` and
+`Cookie` cannot be exposed as agent-controlled `@webmcp_tool` inputs.
+
+Do not authenticate the same request as different users through a session
+cookie and a bearer token. Applications that support both should reject
+ambiguous requests or define one unambiguous credential source.
 
 ## Existing frontend integration
 
@@ -173,6 +265,21 @@ registration.ready.catch(console.error)
 // Call registration.abort() from React useEffect cleanup, Vue onUnmounted,
 // or a pagehide listener.
 ```
+
+After login, logout, account switching, or a permission change, refresh the
+registration. The runtime fetches and authorizes the next manifest before it
+aborts the previous tool generation; a partially registered new generation is
+aborted as a group:
+
+```javascript
+await registration.refresh()
+```
+
+Request tools are always authorized again by their FastAPI endpoints. Client
+tool handlers must also check current page authorization before changing UI
+state, and persistence endpoints must independently authorize every write.
+Tool and manifest fetches reject redirects so authentication credentials and
+request bodies cannot be redirected outside the generated application path.
 
 The same function can be wrapped in a small React hook; the Python package has
 no React dependency.
@@ -238,5 +345,6 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
+node --test tests/runtime.test.mjs
 uv build
 ```

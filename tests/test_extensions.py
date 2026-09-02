@@ -1,7 +1,8 @@
+from dataclasses import replace
 from typing import Annotated
 
 import pytest
-from fastapi import FastAPI, Header, Request
+from fastapi import Cookie, Depends, FastAPI, Header, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -53,6 +54,84 @@ def test_decorator_rejects_a_header_mapping_missing_from_openapi() -> None:
 
     with pytest.raises(RouteConversionError, match="not found in OpenAPI"):
         FastAPIWebMCP(app).tools()
+
+
+def test_decorator_rejects_agent_controlled_authentication_headers() -> None:
+    app = FastAPI()
+
+    @app.get("/private", operation_id="private")
+    @webmcp_tool(headers={"token": "Authorization"})
+    async def private(
+        authorization: Annotated[str, Header()],
+    ) -> dict[str, str]:
+        return {"authorization": authorization}
+
+    with pytest.raises(RouteConversionError, match="authentication headers"):
+        FastAPIWebMCP(app).tools()
+
+
+def test_required_authorization_dependency_is_transport_managed() -> None:
+    app = FastAPI()
+
+    def current_user(
+        authorization: Annotated[str, Header()],
+    ) -> str:
+        return authorization
+
+    @app.get("/private", operation_id="private")
+    @webmcp_tool()
+    async def private(
+        _: Annotated[str, Depends(current_user)],
+    ) -> dict[str, bool]:
+        return {"ok": True}
+
+    tool = FastAPIWebMCP(app).tools()[0]
+
+    assert tool.input_schema["properties"] == {}
+    assert tool.request.header_params == ()
+
+
+def test_required_cookie_dependency_is_transport_managed() -> None:
+    app = FastAPI()
+
+    def current_user(
+        session: Annotated[str, Cookie()],
+    ) -> str:
+        return session
+
+    @app.get("/private", operation_id="private")
+    @webmcp_tool()
+    async def private(
+        _: Annotated[str, Depends(current_user)],
+    ) -> dict[str, bool]:
+        return {"ok": True}
+
+    tool = FastAPIWebMCP(app, credentials="same-origin").tools()[0]
+
+    assert tool.input_schema["properties"] == {}
+    assert tool.request.header_params == ()
+
+
+def test_manual_request_tool_cannot_bypass_authentication_header_validation() -> None:
+    app = FastAPI()
+
+    @app.get("/items", operation_id="items")
+    @webmcp_tool()
+    async def items() -> list[object]:
+        return []
+
+    discovered = FastAPIWebMCP(app).tools()[0]
+    unsafe = replace(
+        discovered,
+        name="manual.private",
+        request=replace(
+            discovered.request,
+            header_params=(("token", "Authorization"),),
+        ),
+    )
+
+    with pytest.raises(RouteConversionError, match="authentication headers"):
+        FastAPIWebMCP(FastAPI()).add_tool(unsafe)
 
 
 def test_request_tool_can_bind_a_page_scoped_path_parameter() -> None:

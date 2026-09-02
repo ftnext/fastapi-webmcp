@@ -7,50 +7,105 @@ const ALLOWED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"])
 export function registerWebMCP({
   manifestUrl = "./manifest.json",
   handlers = {},
+  requestHeaders = {},
   modelContext = typeof document === "undefined" ? null : document.modelContext,
   signal: parentSignal,
 } = {}) {
   const lifetime = new AbortController()
+  let activeRegistration = null
+  let refreshQueue = Promise.resolve()
+
+  const abort = (reason) => {
+    lifetime.abort(reason)
+    activeRegistration?.abort(reason)
+  }
   if (parentSignal) {
-    if (parentSignal.aborted) lifetime.abort(parentSignal.reason)
-    else parentSignal.addEventListener("abort", () => lifetime.abort(parentSignal.reason), {
+    if (parentSignal.aborted) abort(parentSignal.reason)
+    else parentSignal.addEventListener("abort", () => abort(parentSignal.reason), {
       once: true,
     })
   }
 
-  const ready = startRegistration({
-    manifestUrl,
-    handlers,
-    modelContext,
-    signal: lifetime.signal,
-  }).catch((error) => {
-    lifetime.abort(error)
-    throw error
-  })
+  const replaceRegistration = async () => {
+    throwIfAborted(lifetime.signal)
+    if (!modelContext || typeof modelContext.registerTool !== "function") {
+      return { supported: false, manifest: null, tools: [] }
+    }
+
+    // Keep the current tools alive while authentication and the new manifest
+    // are checked. Only switch generations after the manifest is available.
+    const manifest = await loadManifest({
+      manifestUrl,
+      requestHeaders,
+      signal: lifetime.signal,
+    })
+    throwIfAborted(lifetime.signal)
+
+    const nextRegistration = new AbortController()
+    activeRegistration?.abort(new DOMException("WebMCP registration refreshed", "AbortError"))
+    activeRegistration = nextRegistration
+    try {
+      return await registerManifest({
+        manifest,
+        handlers,
+        requestHeaders,
+        modelContext,
+        signal: nextRegistration.signal,
+      })
+    } catch (error) {
+      nextRegistration.abort(error)
+      if (activeRegistration === nextRegistration) activeRegistration = null
+      throw error
+    }
+  }
+
+  const refresh = () => {
+    const pending = refreshQueue.catch(() => undefined).then(replaceRegistration)
+    refreshQueue = pending
+    return pending
+  }
+
+  const ready = refresh()
 
   return {
     signal: lifetime.signal,
     ready,
-    abort: (reason) => lifetime.abort(reason),
+    refresh,
+    abort,
   }
 }
 
-async function startRegistration({ manifestUrl, handlers, modelContext, signal }) {
-  if (!modelContext || typeof modelContext.registerTool !== "function") {
-    return { supported: false, manifest: null, tools: [] }
-  }
-
+async function loadManifest({ manifestUrl, requestHeaders, signal }) {
   const url = new URL(manifestUrl, location.href)
+  if (url.origin !== location.origin) {
+    throw new Error("Refused to load a WebMCP manifest from another origin.")
+  }
+  const headers = await resolveRequestHeaders(requestHeaders, {
+    kind: "manifest",
+    url,
+    signal,
+  })
+  headers.set("Accept", "application/json")
   const response = await fetch(url, {
-    headers: { Accept: "application/json" },
+    headers,
     credentials: "same-origin",
+    redirect: "error",
     signal,
   })
   if (!response.ok) {
     throw new Error(`Could not load the WebMCP manifest (${response.status})`)
   }
 
-  const manifest = await response.json()
+  return await response.json()
+}
+
+async function registerManifest({
+  manifest,
+  handlers,
+  requestHeaders,
+  modelContext,
+  signal,
+}) {
   const applicationBase = applicationBaseUrl(manifest.basePath)
   await Promise.all(
     manifest.tools.map((tool) =>
@@ -70,6 +125,7 @@ async function startRegistration({ manifestUrl, handlers, modelContext, signal }
               credentials: manifest.credentials,
               context: manifest.context ?? {},
               handlers,
+              requestHeaders,
             }),
         },
         { signal },
@@ -80,10 +136,11 @@ async function startRegistration({ manifestUrl, handlers, modelContext, signal }
 }
 
 async function executeTool(options) {
+  let signal = options.lifetimeSignal
   try {
     const tool = options.tool
     const args = options.input && typeof options.input === "object" ? options.input : {}
-    const signal = options.callSignal
+    signal = options.callSignal
       ? AbortSignal.any([options.lifetimeSignal, options.callSignal])
       : options.lifetimeSignal
 
@@ -93,7 +150,7 @@ async function executeTool(options) {
     }
     return await executeRequestTool(tool, args, signal, options)
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       return errorResult({ error: "cancelled" })
     }
     return errorResult({ error: errorMessage(error) })
@@ -145,16 +202,25 @@ async function executeRequestTool(tool, args, signal, options) {
     return errorResult({ error: `Unsupported HTTP method: ${method}` })
   }
 
-  const headers = new Headers({ Accept: "application/json" })
+  const headers = new Headers()
   for (const [inputName, headerName] of Object.entries(requestMapping.headerParams ?? {})) {
     if (args[inputName] !== undefined && args[inputName] !== null) {
       headers.set(headerName, String(args[inputName]))
     }
   }
+  const applicationHeaders = await resolveRequestHeaders(options.requestHeaders, {
+    kind: "tool",
+    url,
+    tool,
+    signal,
+  })
+  for (const [name, value] of applicationHeaders) headers.set(name, value)
+  headers.set("Accept", "application/json")
   const request = {
     method,
     headers,
     credentials: options.credentials === "same-origin" ? "same-origin" : "omit",
+    redirect: "error",
     signal,
   }
   const body = requestBody(requestMapping, args)
@@ -167,6 +233,17 @@ async function executeRequestTool(tool, args, signal, options) {
   const text = await response.text()
   const result = { status: response.status, body: parseJson(text) }
   return response.ok ? textResult(result) : errorResult(result)
+}
+
+async function resolveRequestHeaders(requestHeaders, details) {
+  const provided =
+    typeof requestHeaders === "function" ? await requestHeaders(details) : requestHeaders
+  return new Headers(provided ?? {})
+}
+
+function throwIfAborted(signal) {
+  if (!signal.aborted) return
+  throw signal.reason ?? new DOMException("The operation was aborted", "AbortError")
 }
 
 function applicationBaseUrl(basePath) {

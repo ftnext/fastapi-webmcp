@@ -60,6 +60,8 @@ def test_mount_serves_page_javascript_and_manifest() -> None:
     assert runtime.status_code == 200
     assert "document.modelContext" in runtime.text
     assert "modelContext.registerTool" in runtime.text
+    assert "requestHeaders" in runtime.text
+    assert "Refused to load a WebMCP manifest from another origin" in runtime.text
 
     manifest_response = client.get("/agent/manifest.json")
     assert manifest_response.status_code == 200

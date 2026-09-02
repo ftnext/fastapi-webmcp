@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import inspect
-from collections.abc import Awaitable, Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from importlib.resources import files
 from typing import Any, TypeAlias
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Request, Response, params
 
-from .discovery import TOOL_NAME_PATTERN, ToolDiscovery
+from .discovery import AUTHENTICATION_HEADERS, TOOL_NAME_PATTERN, ToolDiscovery
 from .exceptions import FastAPIWebMCPError, RouteConversionError
 from .models import (
     BrowserTool,
     ClientTool,
+    RequestTool,
     StaticTool,
     ToolCredentials,
     WebMCPManifest,
@@ -20,7 +19,7 @@ from .models import (
 
 ManifestProviderResult: TypeAlias = WebMCPManifest | Collection[BrowserTool]
 ManifestProvider: TypeAlias = Callable[
-    [Request], ManifestProviderResult | Awaitable[ManifestProviderResult]
+    ..., ManifestProviderResult | Awaitable[ManifestProviderResult]
 ]
 
 
@@ -108,8 +107,9 @@ class FastAPIWebMCP:
         *,
         page: str = "/webmcp",
         manifest_provider: ManifestProvider | None = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
-        """Mount the packaged page, runtime, and a possibly dynamic manifest."""
+        """Mount the packaged page, runtime, and a possibly protected dynamic manifest."""
 
         if self._page_path is not None:
             raise FastAPIWebMCPError(f"fastapi-webmcp is already mounted at {self._page_path}")
@@ -119,30 +119,48 @@ class FastAPIWebMCP:
         page_path = self._normalize_page_path(page)
         manifest_path = f"{page_path}/manifest.json"
 
-        async def serve_manifest(request: Request) -> JSONResponse:
-            page_manifest: WebMCPManifest | None = None
-            if manifest_provider is not None:
-                provided = manifest_provider(request)
-                if inspect.isawaitable(provided):
-                    provided = await provided
-                page_manifest = (
-                    provided
-                    if isinstance(provided, WebMCPManifest)
-                    else WebMCPManifest(tools=provided)
-                )
-            return JSONResponse(
-                self.manifest(
-                    root_path=request.scope.get("root_path", ""),
-                    tools=page_manifest.tools if page_manifest is not None else None,
-                    context=page_manifest.context if page_manifest is not None else None,
-                ),
-                headers={"Cache-Control": "no-store"},
+        def manifest_payload(
+            request: Request,
+            page_manifest: WebMCPManifest | None = None,
+        ) -> dict[str, Any]:
+            return self.manifest(
+                root_path=request.scope.get("root_path", ""),
+                tools=page_manifest.tools if page_manifest is not None else None,
+                context=page_manifest.context if page_manifest is not None else None,
             )
+
+        manifest_endpoint: Callable[..., Awaitable[dict[str, Any]]]
+        if manifest_provider is None:
+
+            async def serve_default_manifest(
+                request: Request,
+                response: Response,
+            ) -> dict[str, Any]:
+                response.headers["Cache-Control"] = "no-store"
+                return manifest_payload(request)
+
+            manifest_endpoint = serve_default_manifest
+        else:
+            provider = manifest_provider
+            provider_dependency: Any = Depends(provider)
+
+            async def serve_dynamic_manifest(
+                request: Request,
+                response: Response,
+                provided: ManifestProviderResult = provider_dependency,
+            ) -> dict[str, Any]:
+                if provided is None:
+                    raise FastAPIWebMCPError("manifest provider returned None")
+                response.headers["Cache-Control"] = "no-store"
+                return manifest_payload(request, self._page_manifest(provided))
+
+            manifest_endpoint = serve_dynamic_manifest
 
         self.app.add_api_route(
             manifest_path,
-            serve_manifest,
+            manifest_endpoint,
             methods=["GET"],
+            dependencies=list(dependencies),
             include_in_schema=False,
             name="fastapi_webmcp_manifest",
         )
@@ -153,6 +171,14 @@ class FastAPIWebMCP:
             fallback="index.html",
         )
         self._page_path = page_path
+
+    def _page_manifest(
+        self,
+        provided: ManifestProviderResult,
+    ) -> WebMCPManifest:
+        if isinstance(provided, WebMCPManifest):
+            return provided
+        return WebMCPManifest(tools=provided)
 
     def _validate_tools(self, tools: Collection[BrowserTool]) -> None:
         names: set[str] = set()
@@ -185,6 +211,18 @@ class FastAPIWebMCP:
                 raise RouteConversionError(
                     f"client action {tool.action!r} must match {TOOL_NAME_PATTERN.pattern}"
                 )
+            if isinstance(tool, RequestTool):
+                authentication_headers = sorted(
+                    header_name
+                    for _, header_name in tool.request.header_params
+                    if header_name.casefold() in AUTHENTICATION_HEADERS
+                )
+                if authentication_headers:
+                    header_names = ", ".join(authentication_headers)
+                    raise RouteConversionError(
+                        f"tool {tool.name!r} cannot expose authentication headers "
+                        f"as tool inputs: {header_names}"
+                    )
             if isinstance(tool, StaticTool) and not isinstance(tool.text, str):
                 raise RouteConversionError(f"static tool {tool.name!r} text must be a string")
 

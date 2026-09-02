@@ -14,6 +14,7 @@ from .models import RequestMapping, RequestTool, ToolMetadata
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+AUTHENTICATION_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization"})
 
 
 class ToolDiscovery:
@@ -167,6 +168,16 @@ class ToolDiscovery:
         body_value_param: str | None = None
         header_params: list[tuple[str, str]] = []
         configured_headers = dict(metadata.header_params) if metadata is not None else {}
+        authentication_headers = sorted(
+            header_name
+            for header_name in configured_headers.values()
+            if header_name.casefold() in AUTHENTICATION_HEADERS
+        )
+        if authentication_headers:
+            names = ", ".join(authentication_headers)
+            raise RouteConversionError(
+                f"{method} {path} cannot expose authentication headers as tool inputs: {names}"
+            )
         matched_headers: set[str] = set()
 
         parameters = [*path_item.get("parameters", []), *operation.get("parameters", [])]
@@ -176,7 +187,13 @@ class ToolDiscovery:
             location = parameter.get("in")
             if not isinstance(name, str) or not isinstance(location, str):
                 continue
+            if location == "cookie":
+                # Browser credentials own cookies; agents must never supply them.
+                continue
             if location == "header":
+                if name.casefold() in AUTHENTICATION_HEADERS:
+                    # Application code supplies authentication headers at runtime.
+                    continue
                 tool_name = next(
                     (
                         input_name
