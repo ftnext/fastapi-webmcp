@@ -141,6 +141,6 @@ def get_document(slug: str) -> dict[str, object]:
 webmcp.mount(page="/_webmcp", manifest_provider=page_manifest)
 app.frontend(
     "/room",
-    directory=Path(__file__).with_name("thinkroom_lite_frontend"),
+    directory=Path(__file__).with_name("static"),
     fallback="index.html",
 )

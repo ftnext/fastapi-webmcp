@@ -1,0 +1,1 @@
+"""Thinkroom Lite demonstration application."""

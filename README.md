@@ -285,11 +285,11 @@ request bodies cannot be redirected outside the generated application path.
 The same function can be wrapped in a small React hook; the Python package has
 no React dependency.
 
-A complete framework-free example is included in
-[`examples/thinkroom_lite.py`](https://github.com/ftnext/fastapi-webmcp/blob/main/examples/thinkroom_lite.py):
+A complete framework-free demo is included in
+[`demo/thinkroom_lite/`](https://github.com/ftnext/fastapi-webmcp/tree/main/demo/thinkroom_lite):
 
 ```bash
-uv run uvicorn examples.thinkroom_lite:app --reload
+uv run uvicorn demo.thinkroom_lite.app:app --reload
 # open http://127.0.0.1:8000/room?slug=demo&mode=edit
 ```
 

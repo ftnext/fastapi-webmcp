@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from examples.thinkroom_lite import app
+from demo.thinkroom_lite.app import app
 
 
 def test_thinkroom_lite_serves_a_framework_free_editor() -> None:
