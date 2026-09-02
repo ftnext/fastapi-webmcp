@@ -56,7 +56,8 @@ Run the FastAPI application and open `/agent`. A supporting browser registers
 The decorator belongs directly below the FastAPI route decorator. Explicit
 `operation_id` values produce stable tool names.
 
-A runnable version is included in [`examples/basic.py`](examples/basic.py):
+A runnable version is included in
+[`examples/basic.py`](https://github.com/ftnext/fastapi-webmcp/blob/main/examples/basic.py):
 
 ```bash
 uv run uvicorn examples.basic:app --reload
@@ -285,7 +286,7 @@ The same function can be wrapped in a small React hook; the Python package has
 no React dependency.
 
 A complete framework-free example is included in
-[`examples/thinkroom_lite.py`](examples/thinkroom_lite.py):
+[`examples/thinkroom_lite.py`](https://github.com/ftnext/fastapi-webmcp/blob/main/examples/thinkroom_lite.py):
 
 ```bash
 uv run uvicorn examples.thinkroom_lite:app --reload

@@ -8,6 +8,7 @@ license = "MIT"
 authors = [
     { name = "fastapi-webmcp contributors" },
 ]
+keywords = ["fastapi", "webmcp", "mcp", "browser-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: FastAPI",
@@ -18,11 +19,18 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 dependencies = [
     "fastapi>=0.141.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ftnext/fastapi-webmcp"
+Repository = "https://github.com/ftnext/fastapi-webmcp"
+Issues = "https://github.com/ftnext/fastapi-webmcp/issues"
+Changelog = "https://github.com/ftnext/fastapi-webmcp/releases"
 
 [dependency-groups]
 dev = [
