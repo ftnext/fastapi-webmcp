@@ -60,8 +60,14 @@ A runnable version is included in
 [`examples/basic.py`](https://github.com/ftnext/fastapi-webmcp/blob/main/examples/basic.py):
 
 ```bash
-uv run uvicorn examples.basic:app --reload
+uv run --no-config examples/basic.py
 ```
+
+This one-file example uses inline script metadata and renders a small catalog
+at `/`. Its human-facing forms and its browser-agent tools call the same API
+operations. The packaged WebMCP runtime and manifest are mounted under
+`/_webmcp`. `--no-config` makes the standalone script use only its inline
+metadata instead of inheriting this repository's dependency cutoff.
 
 ## Tool kinds
 
